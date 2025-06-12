@@ -9,157 +9,147 @@
 
 
 
+def getcalc():
+    target_cols_71 = ['M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'AA', 'AB', 'AC', 'AD',
+                      'AE', 'AF', 'AG',
+                      'AH']
 
-def get_prod_send():
-    # 新增客户名称替换函数
-    def update_customer_names(df):
-        # 湖州天能 → 天能
-        mask_tianneng = df['客户'] == '湖州天能'
-        df.loc[mask_tianneng, '客户'] = '天能'
+    # === 各工序数据计算 ===
+    def calculate_product(row_numbers, operation=None):
+        """通用乘积计算函数，支持特殊列处理"""
+        total = 0.0
 
-        # 天津力神 + SN-K1M → 力神
-        mask_lishen_tj = (df['客户'] == '天津力神') & (df['产品型号'] == 'SN-K1M')
-        df.loc[mask_lishen_tj, '客户'] = '力神'
+        for col_letter in target_cols_71:
+            product = 1.0
+            col_idx = column_index_from_string(col_letter)
 
-        # 滁州星恒 → 星恒
-        mask_xingheng_cz = df['客户'] == '滁州星恒'
-        df.loc[mask_xingheng_cz, '客户'] = '星恒'
+            nindex = 0
+            for row in row_numbers:
+                # 特殊处理高温炭化工序的特殊列
+                if operation == "高温炭化":
+                    if col_letter in high_temp_special_cols:
+                        # 获取相关列
+                        main_col, dep_col = special_col_rules[col_letter]
+                        main_col_idx = column_index_from_string(main_col)
+                        dep_col_idx = column_index_from_string(dep_col)
 
-        mask_xingheng_cz = df['客户'].str.contains('国轩', na=False)
-        df.loc[mask_xingheng_cz, '客户'] = '国轩'
+                        # 读取主列和依赖列的值
+                        main_val = safe_float(get_merged_value(sheet, row, main_col_idx))
+                        dep_val = safe_float(get_merged_value(sheet, row, dep_col_idx))
 
-        # 天鹏锂能 → 天鹏
-        mask_tianpeng = df['客户'] == '天鹏锂能'
-        df.loc[mask_tianpeng, '客户'] = '天鹏'
+                        if col_letter == "P" and (row == 75 or row == 68):
+                            break
+                        if col_letter == "R" and (row == 75 or row == 68):
+                            break
+                        if col_letter == "V" and (row == 75 or row == 68):
+                            break
+                        if col_letter == "Y" and (row == 75 or row == 68):
+                            break
+                        if col_letter == "AC" and (row == 75 or row == 68):
+                            break
 
-        # 南通拓邦/惠州拓邦 → 拓邦
-        mask_tuobang1 = df['客户'] == '南通拓邦'
-        df.loc[mask_tuobang1, '客户'] = '拓邦'
+                        # 如果是第一个sheet，高炭不需要考虑 + 72行的逻辑
+                        if sheet_idx == 0:
+                            # 读取第72行的值
+                            main_val72 = 0  # safe_float(get_merged_value(sheet, 72, main_col_idx))
+                            dep_val72 = 0  # safe_float(get_merged_value(sheet, 72, dep_col_idx))
 
-        mask_tuobang2 = df['客户'] == '惠州拓邦'
-        df.loc[mask_tuobang2, '客户'] = '拓邦'
+                            # 如果值大于0，则相加
+                            if main_val > 0 and main_val72 > 0:
+                                main_val += main_val72
+                            if dep_val > 0 and dep_val72 > 0:
+                                dep_val += dep_val72
 
-        # 贵阳比亚迪 → 比亚迪
-        mask_byd = df['客户'] == '贵阳比亚迪'
-        df.loc[mask_byd, '客户'] = '比亚迪'
+                            if col_letter == "P" and row == 56:
+                                continue
+                            if col_letter == "V" and row == 62:
+                                continue
+                            if col_letter == "Y" and row == 62:
+                                continue
+                            if col_letter == "V" and row == 62:
+                                continue
+                            if col_letter == "AA" and row == 62:
+                                continue
 
-        # 天津聚元 → 聚元
-        mask_juyuan = df['客户'] == '天津聚元'
-        df.loc[mask_juyuan, '客户'] = '力神聚元'
+                            # 使用相加后的值
+                            value = dep_val  # main_val +
+                            # print("gaotan-idx0",main_val,dep_val)
+                        else:
 
-        # 东莞力鹏 → 力鹏
-        mask_lipeng = df['客户'] == '东莞力鹏'
-        df.loc[mask_lipeng, '客户'] = '力鹏'
+                            # 对于后续的sheet，使用71行的值,参考74行的值（结余值），如果结余值74大于 71值，则71值0，否则71值-74值
+                            main_val74 = safe_float(get_merged_value(sheet, 74, main_col_idx))
+                            dep_val74 = safe_float(get_merged_value(sheet, 74, dep_col_idx))
 
-        # 时代华景 → 华景
-        mask_huajing = df['客户'] == '时代华景'
-        df.loc[mask_huajing, '客户'] = '华景'
+                            # 计算差值（只取正值）
+                            main_val = max(0, main_val - main_val74)
+                            dep_val = max(0, dep_val - dep_val74)
 
-        mask_tianyi = df['客户'] == '芜湖天弋'
-        df.loc[mask_tianyi, '客户'] = '天弋'
+                            value = dep_val  # main_val +
 
-        # 苏州星恒 → 星恒
-        mask_xingheng_sz = df['客户'] == '苏州星恒'
-        df.loc[mask_xingheng_sz, '客户'] = '星恒'
+                            if col_letter == "P" and row == 56:
+                                continue
+                            if col_letter == "V" and row == 62:
+                                continue
+                            if col_letter == "Y" and row == 62:
+                                continue
+                            if col_letter == "AA" and row == 62:
+                                continue
 
-        # 深圳宇宙探索 → 宇宙探索
-        mask_yuzhou = df['客户'] == '深圳宇宙探索'
-        df.loc[mask_yuzhou, '客户'] = '宇宙'
+                        product *= value
+                        # print("calculate_product-gaotan", col_letter, col_idx,sheet_idx, row,dep_val,main_val,value,product)
+                    else:
+                        continue
+                else:
+                    # 普通列的处理
+                    raw_value = get_merged_value(sheet, row, col_idx)
+                    clean_value = safe_float(raw_value)  # 获得第71行col_idx列数据
 
-        mask_yuzhou = df['客户'] == '宇宙探索'
-        df.loc[mask_yuzhou, '客户'] = '宇宙'
+                    if col_letter == "P" and (row == 75 or row == 68):
+                        break
+                    if col_letter == "R" and (row == 75 or row == 68):
+                        break
+                    if col_letter == "V" and (row == 75 or row == 68):
+                        break
+                    if col_letter == "Y" and (row == 75 or row == 68):
+                        break
+                    if col_letter == "AC" and (row == 75 or row == 68):
+                        break
+                    print("row-feigaotan1", row, col_letter, raw_value, clean_value)
 
-        # 大连中比 → 中比
-        mask_zhongbi = df['客户'] == '大连中比'
-        df.loc[mask_zhongbi, '客户'] = '中比'
+                    # 如果是第一个sheet且是71行，检查是否有72行需要相加
+                    if sheet_idx == 0:
+                        # raw_value72 = get_merged_value(sheet, 72, col_idx)
+                        # clean_value72 = safe_float(raw_value72)
 
-        # 深圳塞恩士 → 塞恩士
-        mask_saienshi = df['客户'] == '深圳塞恩士'
-        df.loc[mask_saienshi, '客户'] = '赛恩士'
+                        if clean_value > 0:
+                            clean_value += 0
+                    else:
+                        # 对于后续的sheet，使用71行的值减去74行的值
+                        main_val74 = safe_float(get_merged_value(sheet, 74, col_idx))
+                        if clean_value > 0 and main_val74 > 0 and clean_value < main_val74:
+                            clean_value = 0
+                        elif clean_value > 0 and main_val74 > 0 and clean_value >= main_val74:
+                            clean_value = clean_value - main_val74
+                        # 对于后续的行
 
-        mask_saienshi = df['客户'] == '深圳赛恩士'
-        df.loc[mask_saienshi, '客户'] = '赛恩士'
+                    if col_letter == "M" and (row == 40 or row == 56 or row == 62):
+                        continue
 
-        # 东莞能优 → 能优
-        mask_nengyou = df['客户'] == '东莞能优'
-        df.loc[mask_nengyou, '客户'] = '能优'
+                    if col_letter == "N" and (row == 40 or row == 56 or row == 62):
+                        continue
+                    if col_letter == "O" and (row == 40 or row == 56):
+                        continue
+                    if col_letter == "P" and (row == 40 or row == 56):
+                        continue
 
-        # 无锡力神 + SN-K1M → 力神
-        mask_lishen_wx = (df['客户'] == '无锡力神') & (df['产品型号'] == 'SN-K1M')
-        df.loc[mask_lishen_wx, '客户'] = '力神'
+                    product *= clean_value
+                    print("row-feigaotan2", row, col_letter, raw_value, clean_value, product)
+                    # if nindex ==0:
+                    # print("calculate_product-feigaotan", col_letter, col_idx,  clean_value, product)
+                nindex += 1
 
-        mask_nengyou = (df['客户'] == '朗泰通') & (df['产品型号'] == 'SN-P2C-1')
-        df.loc[mask_nengyou, '产品型号'] = 'SN-LTF'
+            if product > 0:
+                total += product
 
-        return df
-
-    query = """
-       select Model as '产品型号',customer as '客户',SUM(CASE WHEN MONTH(saleDate) = 1 THEN Sendnum ELSE 0 END)/1000 AS '1月发货数',SUM(CASE WHEN MONTH(saleDate) = 2 THEN Sendnum ELSE 0 END)/1000 AS '2月发货数',SUM(CASE WHEN MONTH(saleDate) = 3 THEN Sendnum ELSE 0 END)/1000 AS '3月发货数',SUM(CASE WHEN MONTH(saleDate) = 4 THEN Sendnum ELSE 0 END)/1000 AS '4月发货数',SUM(CASE WHEN MONTH(saleDate) = 5 THEN Sendnum ELSE 0 END)/1000 AS '5月发货数' from ProductionSend_temp ps where orderstatus != '退货'
-group by Model,customer
-HAVING SUM(Sendnum) > 0
-       """
-    # 执行查询
-    cursor.execute(query)
-
-    # 获取查询结果
-    results = cursor.fetchall()
-
-    # # 获取列名
-    # columns = ['产品型号', '客户', '内蒙发货数']
-    # # 创建 DataFrame
-    # prodsend_data_nm = pd.DataFrame(results, columns=columns)
-    prodsend_data_nm = pd.DataFrame(results, columns=['产品型号', '客户', '1月发货数', '2月发货数', '3月发货数', '4月发货数', '5月发货数'])
-
-    # 应用客户名称替换
-    prodsend_data_nm = update_customer_names(prodsend_data_nm)
-
-    prodsend_data_nm = prodsend_data_nm.groupby(
-        ['客户', '产品型号'],
-        as_index=False
-    )['1月发货数','2月发货数','3月发货数','4月发货数','5月发货数'].sum()
-
-    query = """
-           select Model as '产品型号',customer as '客户',SUM(CASE WHEN MONTH(saleDate) = 1 THEN Sendnum ELSE 0 END)/1000 AS '1月发货数',SUM(CASE WHEN MONTH(saleDate) = 2 THEN Sendnum ELSE 0 END)/1000 AS '2月发货数',SUM(CASE WHEN MONTH(saleDate) = 3 THEN Sendnum ELSE 0 END)/1000 AS '3月发货数',SUM(CASE WHEN MONTH(saleDate) = 4 THEN Sendnum ELSE 0 END)/1000 AS '4月发货数',SUM(CASE WHEN MONTH(saleDate) = 5 THEN Sendnum ELSE 0 END)/1000 AS '5月发货数' from HB_ProductionSend_temp ps 
-    where orderstatus != '退货' group by Model,customer
-    HAVING SUM(Sendnum) > 0
-           """
-    # 执行查询
-    cursor.execute(query)
-
-    # 获取查询结果
-    results_hb = cursor.fetchall()
-
-    # 获取列名
-    # columns_hb = ['产品型号', '客户', '湖北发货数']
-    # # 创建 DataFrame
-    # prodsend_data_hb = pd.DataFrame(results_hb, columns=columns_hb)
-    prodsend_data_hb = pd.DataFrame(results_hb, columns=['产品型号', '客户', '1月发货数', '2月发货数', '3月发货数', '4月发货数', '5月发货数'])
-
-    # 应用客户名称替换
-    prodsend_data_hb = update_customer_names(prodsend_data_hb)
-
-    prodsend_data_hb = prodsend_data_hb.groupby(
-        ['客户', '产品型号'],
-        as_index=False
-    )['1月发货数','2月发货数','3月发货数','4月发货数','5月发货数'].sum()
-
-    return prodsend_data_nm, prodsend_data_hb
-
-def getstorck():
-    # 处理成品库存数据
-    storage_df = pd.DataFrame()
-    if dailystorageFile:
-        try:
-            storage_df = pd.read_excel(
-                dailystorageFile,
-                sheet_name='成品库存',
-                header=1,
-                usecols='B,E,I',
-                names=storage_names
-            ).fillna(0)
-            storage_df['总库存'] = storage_df.iloc[:, 1]
-            storage_df['总发货'] = storage_df.iloc[:, 2]
-            # storage_df['总库存'] = storage_df['内蒙库存'] + storage_df['湖北库存']
-            # storage_df['总发货'] = storage_df['内蒙发货'] + storage_df['湖北发货']
-        except Exception as e:
-            print(f"读取库存文件失败: {str(e)}")
+        print("row-feigaotan3", total)
+        return int(total)
