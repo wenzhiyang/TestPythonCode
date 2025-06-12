@@ -153,3 +153,13 @@ def getcalc():
 
         print("row-feigaotan3", total)
         return int(total)
+
+    # 计算各工序总量
+    print("calculate_product-预处理", )
+    YCL_total = calculate_product([75, 68])
+    print("calculate_product-复合", )
+    FH_total = calculate_product([75, 68, 62])
+    print("calculate_product-低温炭化", )
+    DWTH_total = calculate_product([75, 68, 62, 56])
+    print("calculate_product-石墨化", )
+    SMH_total = calculate_product([75, 68, 62, 56, 48])
