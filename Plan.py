@@ -831,4 +831,163 @@ def resplitsalesplan(isCreate, original_file_path):
     return 1
 
 # 示例调用
-resplitsalesplan(1, "销售2025年销售计划6.13-生产1.xlsx")
+resplitsalesplan(1, "销售2025年销售计划6.13-生产.xlsx")
+
+def GetSalesPlanInit(filePath):
+    #销售给的原始文件,清洗合计行、按成品合并销售月计划，并排序
+    # 加载工作簿和工作表
+    sheet_name = "2025年销售计划"
+    wb = openpyxl.load_workbook(filePath, data_only=True)
+    #ws = wb.active
+    if sheet_name not in wb.sheetnames:
+        raise ValueError(f"工作表 '{sheet_name}' 不存在")
+    ws = wb[sheet_name]
+
+    # 确定有效列数：第二行（行号2）中从A列开始直到第一个空列
+    max_col = 0
+    for cell in ws[2]:  # 第二行
+        if cell.value is None:
+            break
+        max_col += 1
+
+    # 检查是否包含必要的列（D列和F列）
+    # if max_col < 4:
+    #     raise ValueError("有效列不足，未包含D列（第4列）")
+    if max_col < 6:
+        raise ValueError("有效列不足，未包含F列（第6列）")
+
+    # 提取第二行的列名（A列到有效列末尾）
+    columns = [cell.value for cell in ws[2][:max_col]]
+
+    def calculate_formula_value(cell):
+        """处理公式单元格，尝试计算其值"""
+        if cell.data_type == 'f':  # 公式类型
+            try:
+                # 尝试直接计算简单公式
+                if cell.value.startswith('='):
+                    expr = cell.value[1:]
+                    # 安全计算数学表达式
+                    return eval(expr, {"__builtins__": None}, {})
+            except:
+                pass
+        return cell.value  # 非公式或计算失败返回原值
+
+    data = []
+    # 从第三行开始读取数据
+    for row in ws.iter_rows(min_row=3):
+        # 检查停止条件
+        a_val = row[0].value if len(row) > 0 else None
+        b_val = row[1].value if len(row) > 1 else None
+        c_val = row[2].value if len(row) > 2 else None
+
+        # 判断是否满足停止条件
+        stop_condition1 = (a_val in (None, '')) and (b_val in (None, '')) and (c_val in (None, ''))
+        stop_condition2 = (a_val in (None, '') and (b_val in (None, '')) and c_val == '代加工客户销售计划')
+        if stop_condition1 or stop_condition2:
+            break
+
+        # 跳过包含“合计”的行
+        if c_val and '合计' in str(c_val):
+            continue
+
+        # 处理当前行数据
+        row_data = []
+        for col_idx in range(max_col):
+            cell = row[col_idx] if col_idx < len(row) else None
+            cell_value = cell.value if cell is not None else None
+
+            # 处理公式值
+            if cell and cell.data_type == 'f':
+                cell_value = calculate_formula_value(cell)
+
+            # 修改D列（索引3）的值
+            if col_idx == 3 and cell_value == 'SN-LTF':
+                cell_value = 'SN-P2C-1'
+
+            row_data.append(cell_value)
+
+        data.append(row_data)
+
+    # 转换为DataFrame
+    df = pd.DataFrame(data, columns=columns)
+    original_columns = df.columns.tolist()  # 获取原始列顺序
+    month_columns = [col for col in original_columns if re.match(r'^\d+月$', col)]
+    if df.empty:
+        return pd.DataFrame()
+
+    #定义D列的自定义排序规则
+    custom_order3 = [
+        'SN-P1C', 'SN-P2C', 'SN-P1L','SN-P1G','SN-P2C-1', 'SN-4D-1',
+        'SN-H01', 'SN-H04', 'MAG-4CL','SN-P2H','SN-K1-3T', 'SN-09G',
+        'MAG-106','SN-P2', 'SN-BP12T','SN-BP12','SN-DA-3', 'SN-C1M',
+        'SN-P1','SN-K1M','SN-P2C-2','SN-P2C-GX', 'SN-DA-3A','SN-DA-3L',
+         'SN-8B-BL','SN-BN1','SN-P1L-A',  'SN-C1M-A'
+    ] #SN-P1L,SN-H04 是配比有，而销售计划无的型号，'SN-DA-3', 'SN-C1M','MAG-507', 'MAG-P3',','SN-SF3','MAG-100','MAG-10B','SN-P2F', 'MAG-P2A', 'SN-P7'
+    custom_order3 = [
+        'SN-P1C', 'SN-P2C', 'SN-P1G', 'SN-P2C-1', 'SN-4D-1',
+        'SN-H01', 'MAG-4CL', 'SN-P2H', 'SN-K1-3T', 'SN-09G',
+        'MAG-106', 'SN-P2', 'SN-BP12T', 'SN-BP12',
+        'SN-P1', 'SN-K1M', 'SN-P2C-2', 'SN-P2C-GX', 'SN-DA-3A', 'SN-DA-3L',
+        'SN-8B-BL', 'SN-BN1', 'SN-P1L-A', 'SN-C1M-A'
+    ]
+
+    custom_order = [
+        'SN-P1C', 'SN-P2C', 'SN-P1L', 'SN-P1G', 'SN-P2C-1', 'SN-4D-1',
+        'SN-H01', 'SN-H04', 'MAG-4CL', 'SN-P2H', 'MAG-106A', 'SN-10BL',
+        'MAG-09', 'SN-09G', 'MAG-106', 'SN-P2', 'SN-BP12T', 'SN-BP12',
+        'SN-BN1', 'SN-K1-3T','SN-C1M-A','SN-P1', 'SN-K1M', 'SN-P2C-2',
+        'SN-P2C-GX'
+    ]
+
+
+    # 将D列转换为分类类型，并指定顺序 , 'SN-DK' 'SN-DA','SN-DA-4'
+    df[columns[3]] = pd.Categorical(
+        df[columns[3]],
+        categories=custom_order,
+        ordered=True
+    )
+
+
+
+    # 确定分组列（D列）和需要聚合的列（F列及之后）
+    group_col = columns[3]
+    agg_columns = columns[5:]  # F列是第6列，索引5
+
+    # 确保聚合列为数值类型
+    for col in agg_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # 确保目标列名存在
+    target_column = '每月目标安全库存'
+    if target_column not in columns:
+        raise ValueError(f"列 '{target_column}' 不存在于数据中")
+
+    # 确定分组列（D列）和需要聚合的列（包括目标列）
+    group_col = columns[3]
+    # 显式指定需要聚合的月份列和目标列
+    #month_columns = ['1月', '2月', '3月', '4月', '5月', '6月', '7月','8月']
+
+
+
+    agg_columns = month_columns + [target_column]
+
+    # 确保列名存在于DataFrame中
+    missing_cols = [col for col in agg_columns if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"缺失列: {missing_cols}")
+
+    # 转换为数值类型，处理空值
+    for col in agg_columns:
+        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+
+    # 按D列分组并聚合求和
+    #grouped_df = df.groupby(group_col, as_index=False)[agg_columns].sum()
+    grouped_df = df.groupby(group_col, as_index=False, observed=False)[agg_columns].sum()
+
+    # 按自定义顺序排序
+    grouped_df = grouped_df.sort_values(by=group_col)
+
+    # 重置索引（可选）
+    grouped_df.reset_index(drop=True, inplace=True)
+
+    return grouped_df
