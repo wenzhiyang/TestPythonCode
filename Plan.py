@@ -16,7 +16,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Font, Border, Side, PatternFill, Alignment, numbers
 from openpyxl.utils import range_boundaries
 from openpyxl.formula.translate import Translator
-from pycel import ExcelCompiler
+
 import os
 import pandas as pd
 import mysql.connector
@@ -32,6 +32,7 @@ from openpyxl.utils import get_column_letter
 from copy import copy
 from datetime import datetime
 # 连接到 MySQL 数据库
+from pycel import ExcelCompiler
 
 import openpyxl
 from openpyxl.utils import get_column_letter
@@ -831,17 +832,20 @@ def resplitsalesplan(isCreate, original_file_path):
     return 1
 
 # 示例调用
-resplitsalesplan(1, "销售2025年销售计划6.13-生产.xlsx")
+#resplitsalesplan(1, "销售2025年销售计划6.13-生产.xlsx")
 
 def GetSalesPlanInit(filePath):
     #销售给的原始文件,清洗合计行、按成品合并销售月计划，并排序
     # 加载工作簿和工作表
     sheet_name = "2025年销售计划"
-    wb = openpyxl.load_workbook(filePath, data_only=True)
-    #ws = wb.active
+    wb = openpyxl.load_workbook(filePath, data_only=False)
+
     if sheet_name not in wb.sheetnames:
         raise ValueError(f"工作表 '{sheet_name}' 不存在")
     ws = wb[sheet_name]
+
+    # 创建ExcelCompiler对象来计算公式
+    compiler = ExcelCompiler(filename=filePath)
 
     # 确定有效列数：第二行（行号2）中从A列开始直到第一个空列
     max_col = 0
@@ -859,22 +863,9 @@ def GetSalesPlanInit(filePath):
     # 提取第二行的列名（A列到有效列末尾）
     columns = [cell.value for cell in ws[2][:max_col]]
 
-    def calculate_formula_value(cell):
-        """处理公式单元格，尝试计算其值"""
-        if cell.data_type == 'f':  # 公式类型
-            try:
-                # 尝试直接计算简单公式
-                if cell.value.startswith('='):
-                    expr = cell.value[1:]
-                    # 安全计算数学表达式
-                    return eval(expr, {"__builtins__": None}, {})
-            except:
-                pass
-        return cell.value  # 非公式或计算失败返回原值
-
     data = []
     # 从第三行开始读取数据
-    for row in ws.iter_rows(min_row=3):
+    for row in ws.iter_rows(min_row=3,values_only=False):
         # 检查停止条件
         a_val = row[0].value if len(row) > 0 else None
         b_val = row[1].value if len(row) > 1 else None
@@ -894,11 +885,29 @@ def GetSalesPlanInit(filePath):
         row_data = []
         for col_idx in range(max_col):
             cell = row[col_idx] if col_idx < len(row) else None
-            cell_value = cell.value if cell is not None else None
+            if cell.data_type == 'f':  # 如果单元格包含公式
+                # 使用pycel计算公式
+                formula = cell.value
+                # 转换单元格坐标为A1表示法
+                cell_address = f'{sheet_name}!{cell.coordinate}'
+                try:
+                    cell_value = compiler.evaluate(cell_address)
+                    #row_data.append(result)
+                except Exception as e:
+                    print(f"公式计算错误: {formula} 在 {cell_address}, 错误信息: {e}")
+                    #row_data.append(None)
+                    cell_value = None
+            else:
+                cell_value = cell.value
+
+
+            #cell_value = cell.value if cell is not None else None
 
             # 处理公式值
-            if cell and cell.data_type == 'f':
-                cell_value = calculate_formula_value(cell)
+            # if cell and cell.data_type == 'f':
+            #     cell_value = calculate_formula_value(cell)
+            # if cell:
+            #     cell_value = convert_formula(cell)
 
             # 修改D列（索引3）的值
             if col_idx == 3 and cell_value == 'SN-LTF':
@@ -991,3 +1000,473 @@ def GetSalesPlanInit(filePath):
     grouped_df.reset_index(drop=True, inplace=True)
 
     return grouped_df
+
+
+df = GetSalesPlanInit("销售2025年销售计划6.13-生产.xlsx")
+print("df",df[['产品型号','6月']])
+
+
+def process_workbook_results(marrequirfilename, factory, sales_df, radio_df, dailyfilename=None,logic=None):
+    # 加载主需求工作簿
+    wb = load_workbook(marrequirfilename)
+    sheets = wb.sheetnames
+
+    # 初始化数据容器
+    YCL_data = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])
+    FH_data = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])
+    DWTH_data = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])  # 内蒙低温炭化
+    #DWTH_data_hb = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])  # 湖北低温炭化
+    SMH_data = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])
+    GWTH_data = pd.DataFrame(columns=["operation", "factory", "months", "totalnum"])
+
+    special_col_rules = {
+        'P': ('O', 'P'),  # 2-1T#: O列是2-1#, P列是2-1T#
+        'Q': ('R', 'Q'),  # 2A-1TB2#: Q列是2A-1TB2#, R列是2A-2#
+        'V': ('U', 'V'),  # 石S1-1T#: U列是石S1-1#, V列是石S1-1T#
+        'Y': ('X', 'Y'),  # 针S1-1T#: X列是针S1-1#, Y列是针S1-1T#
+        'AA': ('AA', 'AA'),  # S1-3T#: Z列是S1-2#, AA列是S1-3T#
+        'AC': ('AB', 'AC')  # S2-2T#: AB列是高S2-2#, AC列是S2-2T#
+    }
+
+    SMH_radio = pd.DataFrame(columns=common_columns)
+
+    # 高温炭化特殊列
+    high_temp_special_cols = ['P', 'Q', 'V', 'Y', 'AA', 'AC']
+
+    # ----------- 核心工具函数 -----------
+    def get_merged_value(sheet, row, col):
+        """处理合并单元格，返回左上角的值"""
+        cell = sheet.cell(row=row, column=col)
+        for merged_range in sheet.merged_cells.ranges:
+            if cell.coordinate in merged_range:
+                return sheet.cell(merged_range.min_row, merged_range.min_col).value
+        return cell.value
+
+    def safe_float(value):
+        """增强数值转换逻辑"""
+        try:
+            if isinstance(value, str):
+                value = value.replace(',', '').replace(' ', '')
+                if '%' in value:
+                    return float(value.replace('%', '')) / 100
+            return float(value) if value not in ("/", None, "", " ") else 0.0
+        except (ValueError, TypeError) as e:
+            print(f"数值转换异常：{str(e)} → 原始值：'{value}'")
+            return 0.0
+
+    def offset_month(base_month, offset):
+        """处理月份偏移，支持跨年"""
+        month_num = int(base_month.replace("月", ""))
+        new_month = (month_num + offset - 1) % 12 + 1
+        return f"{new_month}月"
+
+    # ----------- 主处理逻辑 -----------
+    valid_months = [f"{i}月" for i in range(5, 13)]  # 5月到12月
+
+    SMH_radio = pd.DataFrame(columns=common_columns)
+    DWTH_radio = pd.DataFrame(columns=common_columns)
+    GWTH_radio = pd.DataFrame(columns=common_columns)
+
+    sheet_idx = 0
+
+    preMonth = "1月"
+    for sheet_name in sheets:
+        if "原材料需求倒算" not in sheet_name:
+            continue
+
+        current_month = sheet_name.replace("原材料需求倒算", "")
+        if current_month not in valid_months:
+            continue
+
+        sheet = wb[sheet_name]
+        if sheet_idx == 0:
+            preMonth = current_month
+
+        # === 构建SMH_radio数据 ===
+        DWTH_radio_values = []
+        for col_idx in range(13, 35):  # Excel列号从1开始，M=13，AH=34
+            raw_value = get_merged_value(sheet, 56, col_idx)
+            clean_value = safe_float(raw_value)
+            DWTH_radio_values.append(clean_value)
+
+            # 将读取的值按common_columns顺序插入DataFrame
+            # 注意：需确保common_columns长度与列数一致（22列）
+        SMH_radio_values = []
+        for col_idx in range(13, 35):  # Excel列号从1开始，M=13，AH=34
+            raw_value = get_merged_value(sheet, 48, col_idx)
+            clean_value = safe_float(raw_value)
+            SMH_radio_values.append(clean_value)
+
+        GWTH_radio_values = []
+        for col_idx in range(13, 35):  # Excel列号从1开始，M=13，AH=34
+            raw_value = get_merged_value(sheet, 40, col_idx)
+            clean_value = safe_float(raw_value)
+            GWTH_radio_values.append(clean_value)
+
+        print("GWTH_radio_values",GWTH_radio_values)
+
+        if len(DWTH_radio_values) == len(common_columns):
+            DWTH_radio = pd.concat([DWTH_radio, pd.DataFrame([DWTH_radio_values], columns=common_columns)],ignore_index=True)
+        else:
+            print(f"警告：Sheet {sheet_name} 的第56行列数不匹配，已跳过")
+
+        if len(SMH_radio_values) == len(common_columns):
+            SMH_radio = pd.concat([SMH_radio, pd.DataFrame([SMH_radio_values], columns=common_columns)],ignore_index=True)
+        else:
+            print(f"警告：Sheet {sheet_name} 的第48行列数不匹配，已跳过")
+
+        if len(GWTH_radio_values) == len(common_columns):
+            GWTH_radio = pd.concat([GWTH_radio, pd.DataFrame([GWTH_radio_values], columns=common_columns)],ignore_index=True)
+        else:
+            print(f"警告：Sheet {sheet_name} 的第40行列数不匹配，已跳过")
+
+
+
+
+        # target_cols_75 = ['M', 'N', 'O', 'Q', 'S', 'T', 'U', 'X', 'W', 'Z', 'AA', 'AB', 'AD', 'AE', 'AF', 'AG',
+        #                   'AH']
+        target_cols_71 = ['M', 'N', 'O','P', 'Q', 'R','S', 'T', 'U','V',  'W', 'X','Y','Z', 'AA', 'AB','AC', 'AD', 'AE', 'AF', 'AG',
+                          'AH']
+        # === 各工序数据计算 ===
+        def calculate_product(row_numbers, operation=None):
+            """通用乘积计算函数，支持特殊列处理"""
+            total = 0.0
+            multiply_count = 0  # 记录有效正数相乘的次数
+
+            for col_letter in target_cols_71:
+                product = 1.0
+                col_idx = column_index_from_string(col_letter)
+
+                nindex = 0
+                valid = True  # 标记当前列是否有效
+                for row in row_numbers:
+                    # 特殊处理高温炭化工序的特殊列
+                    if operation == "高温炭化":
+                        if col_letter in high_temp_special_cols:
+                            # 获取相关列
+                            main_col, dep_col = special_col_rules[col_letter]
+                            main_col_idx = column_index_from_string(main_col)
+                            dep_col_idx = column_index_from_string(dep_col)
+
+                            # 读取主列和依赖列的值
+                            main_val = safe_float(get_merged_value(sheet, row, main_col_idx))
+                            dep_val = safe_float(get_merged_value(sheet, row, dep_col_idx))
+
+                            if col_letter == "P" and (row == 75 or row == 68):
+                                valid = False
+                                break
+                            if col_letter == "R" and (row == 75 or row == 68):
+                                valid = False
+                                break
+                            if col_letter == "V" and (row == 75 or row == 68):
+                                valid = False
+                                break
+                            if col_letter == "Y" and (row == 75 or row == 68):
+                                valid = False
+                                break
+                            if col_letter == "AC" and (row == 75 or row == 68):
+                                valid = False
+                                break
+
+                            # 如果是第一个sheet，高炭不需要考虑 + 72行的逻辑
+                            if sheet_idx == 0:
+                                # 读取第72行的值
+                                main_val72 = 0 #safe_float(get_merged_value(sheet, 72, main_col_idx))
+                                dep_val72 = 0 #safe_float(get_merged_value(sheet, 72, dep_col_idx))
+
+                                # 如果值大于0，则相加
+                                if main_val > 0 and main_val72 > 0:
+                                    main_val += main_val72
+                                if dep_val > 0 and dep_val72 > 0:
+                                    dep_val += dep_val72
+
+                                if col_letter=="P" and row == 56:
+                                    continue
+                                if col_letter == "V" and row == 62:
+                                    continue
+                                if col_letter == "Y" and row == 62:
+                                    continue
+                                if col_letter == "V" and row == 62:
+                                    continue
+                                if col_letter == "AA" and row == 62:
+                                    continue
+
+                                # 使用相加后的值
+                                value =  dep_val #main_val +
+                                #print("gaotan-idx0",main_val,dep_val)
+                            else:
+
+                                # 对于后续的sheet，使用71行的值,参考74行的值（结余值），如果结余值74大于 71值，则71值0，否则71值-74值
+                                main_val74 = safe_float(get_merged_value(sheet, 74, main_col_idx))
+                                dep_val74 = safe_float(get_merged_value(sheet, 74, dep_col_idx))
+
+                                # 计算差值（只取正值）
+                                main_val = max(0, main_val - main_val74)
+                                dep_val = max(0, dep_val - dep_val74)
+
+                                value =  dep_val #main_val +
+
+                                if col_letter=="P" and row == 56:
+                                    continue
+                                if col_letter=="V" and row == 62:
+                                    continue
+                                if col_letter == "Y" and row == 62:
+                                    continue
+                                if col_letter == "AA" and row == 62:
+                                    continue
+
+                            if nindex == 0 and value <= 0:
+                                valid = False
+                                break
+                            if nindex > 0 and (value <= 0 or value >= 1):
+                                valid = False
+                                break
+
+                            product *= value
+                            multiply_count += 1
+                            #print("calculate_product-gaotan", col_letter, col_idx,sheet_idx, row,dep_val,main_val,value,product)
+                        else:
+                            continue
+                    else:
+                        # 普通列的处理
+                        raw_value = get_merged_value(sheet, row, col_idx)
+                        clean_value = safe_float(raw_value) #获得第71行col_idx列数据
+
+                        if col_letter == "P" and (row == 75 or row == 68):
+                            valid = False
+                            break
+                        if col_letter == "R" and (row == 75 or row == 68):
+                            valid = False
+                            break
+                        if col_letter == "V" and (row == 75 or row == 68):
+                            valid = False
+                            break
+                        if col_letter == "Y" and (row == 75 or row == 68):
+                            valid = False
+                            break
+                        if col_letter == "AC" and (row == 75 or row == 68):
+                            valid = False
+                            break
+                        print("row-feigaotan1",row,col_letter,raw_value,clean_value)
+
+                        # 如果是第一个sheet且是71行，检查是否有72行需要相加
+                        if sheet_idx == 0:
+                            #raw_value72 = get_merged_value(sheet, 72, col_idx)
+                            #clean_value72 = safe_float(raw_value72)
+
+                            if clean_value > 0:
+                                clean_value += 0
+                        else:
+                            # 对于后续的sheet，使用71行的值减去74行的值
+                            main_val74 = safe_float(get_merged_value(sheet, 74, col_idx))
+                            if clean_value > 0 and main_val74 >0 and clean_value < main_val74:
+                                clean_value = 0
+                            elif clean_value > 0 and main_val74 >0 and clean_value >= main_val74:
+                                clean_value = clean_value - main_val74
+                            #对于后续的行
+
+                        if col_letter == "M" and (row == 40 or row ==56 or row==62):
+                            continue
+
+                        if col_letter == "N" and (row == 40 or row ==56 or row==62):
+                            continue
+                        if col_letter == "O" and (row == 40 or row ==56):
+                            continue
+                        if col_letter == "P" and (row == 40 or row ==56):
+                            continue
+
+                        if nindex == 0 and clean_value <= 0:
+                            valid = False
+                            break
+                        if nindex > 0 and (clean_value <= 0 or clean_value >= 1):
+                            valid = False
+                            break
+
+                        product *= clean_value
+                        multiply_count += 1
+                        print("row-feigaotan2", row, col_letter, raw_value, clean_value,product)
+                        append_data_using_open(
+                            f"Operation: {operation}, Column: {col_letter}, Multiply Count: {multiply_count}, clean_value: {clean_value}, product: {product}\n")
+                        #if nindex ==0:
+                            #print("calculate_product-feigaotan", col_letter, col_idx,  clean_value, product)
+                    nindex += 1
+
+                # if product > 0:
+                #     total += product
+
+                if valid and product > 0:
+                    total += product
+
+                    print(f"Operation: {operation}, Column: {col_letter}, Multiply Count: {multiply_count}, Total: {total}")
+                    append_data_using_open(f"Operation: {operation}, Column: {col_letter}, Multiply Count: {multiply_count}, Total: {total}\n")
+
+            #print("row-feigaotan3", total)
+            print(f"Operation: {operation}, Final Multiply Count: {multiply_count}, Final Total: {total}")
+            append_data_using_open(f"Operation: {operation}, Final Multiply Count: {multiply_count}, Final Total: {total:.1f}\n")
+            return int(total)
+
+        # 计算各工序总量
+        print("calculate_product-预处理",)
+        YCL_total = calculate_product([75, 68],"预处理")
+        print("calculate_product-复合",)
+        FH_total = calculate_product([75, 68, 62],"复合")
+        print("calculate_product-低温炭化", )
+        DWTH_total = calculate_product([75, 68, 62, 56],"低温炭化")
+        print("calculate_product-石墨化", )
+        SMH_total = calculate_product([75, 68, 62, 56, 48],"石墨化")
+        print("calculate_product-高温炭化", )
+        GWTH_total = calculate_product([75, 68, 62, 56, 48,40], operation="高温炭化")
+
+        print("new_data-currentmonth",current_month)
+        # 存储基础数据
+        new_data = {
+            "预处理": (YCL_data, YCL_total, current_month),
+            "复合造粒": (FH_data, FH_total, current_month),
+            "低温炭化": (DWTH_data, DWTH_total, offset_month(current_month, 1)),
+            "石墨化":  (SMH_data, SMH_total, offset_month(current_month, 1)),
+            "高温炭化": (GWTH_data, GWTH_total, offset_month(current_month, 1))
+        }
+
+        for op, (df, total, month) in new_data.items():
+            df.loc[len(df)] = {
+                "operation": op,
+                "factory": factory,
+                "months": month,
+                "totalnum": total
+            }
+            #if op == "低温炭化" and month=="6月"
+            print("get-value",op,factory,month,total)
+
+        sheet_idx += 1
+
+        # 分工厂存储低温炭化数据
+        dwth_month = offset_month(current_month, 1)
+
+
+    # === 特殊日报表处理 ===
+    print("factory",factory,dailyfilename)
+    if factory in ["内蒙", "湖北","所有"] and dailyfilename:
+        try:
+            daily_wb = load_workbook(dailyfilename)
+            sheet_map = {
+                "内蒙": "库存汇总",
+                "湖北": "库存汇总",
+                "所有": "库存汇总"
+            }
+            daily_sheet = daily_wb[sheet_map[factory]]
+
+            current_models = sales_df["产品型号"].tolist()  # 获取当前处理的产品型号列表
+            filtered_radio_df = radio_df[radio_df["产品型号"].isin(current_models)]
+
+            # 移除'产品型号'列并验证列数
+            filtered_radio_df = filtered_radio_df.drop(columns=['产品型号'])
+            if filtered_radio_df.shape[1] != len(common_columns):
+                raise ValueError(
+                    f"radio_df列数({filtered_radio_df.shape[1]})与common_columns({len(common_columns)})不匹配")
+
+            # 转换为NumPy数组
+            radio_matrix = filtered_radio_df.values  # 形状应为 (n, 22)
+
+            # === 通用处理函数 ===
+            def process_daily_data(row_num, radio_matrix, target_radio_df, target_col_letters=None):
+                """处理日报表指定行数据并返回计算结果"""
+                if target_col_letters is None:
+                    target_col_letters = [
+                        'B', 'C', 'D', 'E', 'F', 'H', 'I', 'J', 'K', 'L',
+                        'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'AA', 'AB'
+                    ]
+
+                daily_values = []
+                for col_letter in target_col_letters:
+                    col_idx = column_index_from_string(col_letter)
+                    raw_value = get_merged_value(daily_sheet, row_num, col_idx)
+                    clean_value = safe_float(raw_value)
+                    daily_values.append(clean_value)
+                print("daily_values",daily_values)
+
+                if len(daily_values) == len(common_columns):
+                    daily_array = np.array(daily_values).reshape(1, -1)
+                    target_radio = target_radio_df.iloc[-1].values.reshape(1, -1)
+                    matrix_result = daily_array  * target_radio  #* radio_matrix
+                    print("zailu",daily_array * target_radio)
+                    print("zailutotal",int(np.sum(matrix_result[matrix_result > 0])))
+                    return int(np.sum(matrix_result[matrix_result > 0]))
+                else:
+                    print(f"日报表列数不匹配，已跳过计算")
+                    return 0
+
+            # === 处理SMH_data（原逻辑） ===
+            smh_total = process_daily_data(20, radio_matrix, SMH_radio)
+            SMH_data.loc[len(SMH_data)] = {
+                "operation": "石墨化",
+                "factory": factory,
+                "months": preMonth,
+                "totalnum": smh_total
+            }
+            print("SMH_data-smh_total-radio_matrix", radio_matrix)
+            print("SMH_data-smh_total-SMH_radio", SMH_radio)
+            print("SMH_data-smh_total",smh_total)
+            print("SMH_data",SMH_data)
+            # === 新增DWTH_data处理（第16行） ===
+            dwth_total = process_daily_data(16, radio_matrix, DWTH_radio)
+            DWTH_data.loc[len(DWTH_data)] = {
+                "operation": "低温炭化",
+                "factory": factory,
+                "months": preMonth,
+                "totalnum": dwth_total
+            }
+
+            # === 新增GWTH_data处理（第28行，修改F列为G列） ===
+            gwth_col_letters = [
+                'B', 'C', 'D', 'E', 'G', 'H', 'I', 'J', 'K', 'L',  # F改为G
+                'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'AA', 'AB'
+            ]
+            gwth_total = process_daily_data(28, radio_matrix, GWTH_radio, gwth_col_letters)
+            GWTH_data.loc[len(GWTH_data)] = {
+                "operation": "高温炭化",
+                "factory": factory,
+                "months": preMonth,
+                "totalnum": gwth_total
+            }
+
+            # 数据排序处理
+            for df in [SMH_data, DWTH_data, GWTH_data]:
+                df['months'] = df['months'].astype(str)
+                month_order = {f"{i}月": i for i in range(1, 13)}
+                df['month_num'] = df['months'].map(month_order)
+                df.sort_values('month_num', inplace=True)
+                df.drop('month_num', axis=1, inplace=True)
+                df.reset_index(drop=True, inplace=True)
+
+
+
+        except Exception as e:
+            print(f"日报表处理失败：{str(e)}")
+
+    # ----------- 数据补全逻辑 -----------
+    def complete_months(df, offset=False):
+        """自动补全至12月数据"""
+        if df.empty:
+            return df
+
+        last_month = df.iloc[-1]["months"]
+        last_num = int(last_month.replace("月", ""))
+
+        new_rows = []
+        for m in range(last_num + 1, 13):
+            new_row = df.iloc[-1].copy()
+            new_month = offset_month(last_month, m - last_num) if offset else f"{m}月"
+            new_row["months"] = new_month
+            new_rows.append(new_row)
+
+        return pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True) if new_rows else df
+
+    # 返回对应工厂数据集
+    DWTH_result = DWTH_data # if factory == "内蒙" else DWTH_data_hb
+    return (
+        complete_months(YCL_data),
+        complete_months(FH_data),
+        complete_months(DWTH_result, offset=True),
+        complete_months(SMH_data, offset=True),
+        complete_months(GWTH_data,offset=True)
+    )
